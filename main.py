@@ -26,8 +26,6 @@ def ensure_company_category_schema():
         conection = get_conection()
         cursor = conection.cursor()
 
-        cursor.execute("SELECT name FROM PRAGMA_TABLE_INFO('company')")
-        company_columns = {row["name"] for row in cursor.fetchall()}
 
         conection.commit()
         cursor.close()
@@ -65,9 +63,6 @@ def get_cart(request: Request):
 
         return clean_cart
 
-def get_cart_count():
-        return 0
-
 def build_cart_response(redirect_to: str, cart: dict[str, int]):
         response = Response(url=redirect_to, status_code=303)
         response.set_cookie(
@@ -93,7 +88,7 @@ cursor = conection.cursor()
 async def company(company_id: int, search: str | None = None):
 
         cursor = conection.cursor()
-        search_term = (search or "").strip().lower()
+       
 
         cursor.execute("SELECT * FROM company WHERE id = ?", (company_id,))
         row = cursor.fetchone()
@@ -109,25 +104,12 @@ async def company(company_id: int, search: str | None = None):
         """
         dish_params = [company_id]
 
-        if search_term:
-                dish_query += """
-                        AND (
-                                LOWER(name) LIKE ?
-                                OR LOWER(COALESCE(descript, '')) LIKE ?
-                        )
-                """
-                like_term = f"%{search_term}%"
-                dish_params.extend([like_term, like_term])
 
         dish_query += " ORDER BY id"
         cursor.execute(dish_query, dish_params)
         dishes = cursor.fetchall()
 
         cursor.close()
-        
-       
-        if not row:
-                return {"error": "Company not found"}, 404      
         
         return {
                 "company": dict(row),
@@ -207,16 +189,7 @@ async def cart(request: Request):
 
                         subtotal = float(dish_row["price"]) * quantity
                         total_price += subtotal
-                        items.append(
-                                {
-                                        "id": dish_row["id"],
-                                        "name": dish_row["name"],
-                                        "price": dish_row["price"],
-                                        "image_url": dish_row["image_url"],
-                                        "quantity": quantity,
-                                        "subtotal": subtotal,
-                                }
-                        )
+                       
 
         return {
                         "items": items,
@@ -358,11 +331,12 @@ async def dishes(page: int = 1, search: str | None = None):
                         OR LOWER(COALESCE(dish.descript, '')) LIKE ?
                         OR LOWER(COALESCE(company.name, '')) LIKE ?
                 """
-                like_term = f"%{search_term}%"
-                base_query += where_sql
-                count_query += where_sql
-                query_params.extend([like_term, like_term, like_term])
-                count_params.extend([like_term, like_term, like_term])
+                
+                like_term = f"%{search_term.strip().lower()}%"
+                search_params = [like_term] * 4
+
+                query_params.extend(search_params)
+                count_params.extend(search_params)
 
         query = base_query + " ORDER BY dish.id LIMIT ? OFFSET ?"
         cursor.execute(query, (*query_params, items_per_page, offset))
