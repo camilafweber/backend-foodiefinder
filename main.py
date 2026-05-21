@@ -34,9 +34,21 @@ def ensure_company_category_schema():
 def get_company_category_options():
         conection = get_conection()
         cursor = conection.cursor()
-        options = []
-        
+
+        cursor.execute("""
+                SELECT DISTINCT
+                        company.category_id AS id,
+                        COALESCE(category.name, 'Category ' || company.category_id) AS name
+                FROM company
+                LEFT JOIN category ON category.id = company.category_id
+                WHERE company.category_id IS NOT NULL
+                ORDER BY name
+        """)
+
+        options = [dict(row) for row in cursor.fetchall()]
+
         cursor.close()
+        conection.close()
         return options
 
 def get_cart(request: Request):
