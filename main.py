@@ -4,7 +4,6 @@ import sqlite3
 import os
 from pathlib import Path
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Response, Request
 from fastapi.staticfiles import StaticFiles
 from math import ceil
@@ -12,58 +11,11 @@ from math import ceil
 
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
-FRONTEND_DIST = BASE_DIR.parent / "dist"
-
-
-@app.middleware("http")
-async def strip_api_prefix(request: Request, call_next):
-        if request.scope["path"].startswith("/api/"):
-                request.scope["path"] = request.scope["path"][4:]
-        return await call_next(request)
-
-DEFAULT_ALLOWED_ORIGINS = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:5174",
-    "http://127.0.0.1:5174",
-]
-
-raw_allowed_origins = os.getenv("ALLOWED_ORIGINS", "")
-if raw_allowed_origins.strip():
-    allowed_origins = [origin.strip() for origin in raw_allowed_origins.split(",") if origin.strip()]
-else:
-    allowed_origins = DEFAULT_ALLOWED_ORIGINS
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 app.mount("/static_dish", StaticFiles(directory=BASE_DIR / "static_dish"), name="static_dish")
 
-
-
 DB_NAME = BASE_DIR / "menuproject3.db"
-COMPANY_CATEGORY_DEFINITIONS = [
-        {"slug": "cafes", "label": "Cafes"},
-        {"slug": "bakeries", "label": "Bakeries"},
-        {"slug": "bars", "label": "Bars"},
-        {"slug": "fast-food", "label": "Fast Food"},
-        {"slug": "gourmet", "label": "Gourmet"},
-]
-COMPANY_CATEGORY_SEEDS = {
-        "cafes": [7, 13, 38],
-        "bakeries": [16, 17, 32, 39, 46],
-        "bars": [27, 35, 48, 50],
-        "fast-food": [2, 14, 18, 21, 29, 42],
-        "gourmet": [1, 9, 22],
-}
 
 def get_conection():
         conection =  sqlite3.connect(DB_NAME)
@@ -74,46 +26,29 @@ def ensure_company_category_schema():
         conection = get_conection()
         cursor = conection.cursor()
 
-        cursor.execute("PRAGMA table_info(company)")
-        company_columns = {row["name"] for row in cursor.fetchall()}
-
-        if "category_id" not in company_columns:
-                cursor.execute("ALTER TABLE company ADD COLUMN category_id INTEGER")
-
-        category_ids = {}
-        for option in COMPANY_CATEGORY_DEFINITIONS:
-                cursor.execute("SELECT id FROM category WHERE name = ?", (option["label"],))
-                row = cursor.fetchone()
-
-                if row is None:
-                        cursor.execute("INSERT INTO category (name) VALUES (?)", (option["label"],))
-                        category_ids[option["slug"]] = cursor.lastrowid
-                else:
-                        category_ids[option["slug"]] = row["id"]
-
-        for slug, company_ids in COMPANY_CATEGORY_SEEDS.items():
-                category_id = category_ids[slug]
-                for company_id in company_ids:
-                        cursor.execute(
-                                "UPDATE company SET category_id = ? WHERE id = ? AND category_id IS NULL",
-                                (category_id, company_id),
-                        )
 
         conection.commit()
         cursor.close()
         conection.close()
 
 def get_company_category_options():
+        conection = get_conection()
         cursor = conection.cursor()
-        options = []
 
-        for option in COMPANY_CATEGORY_DEFINITIONS:
-                cursor.execute("SELECT id, name FROM category WHERE name = ?", (option["label"],))
-                row = cursor.fetchone()
-                if row:
-                        options.append({"id": row["id"], "label": row["name"]})
+        cursor.execute("""
+                SELECT DISTINCT
+                        company.category_id AS id,
+                        COALESCE(category.name, 'Category ' || company.category_id) AS name
+                FROM company
+                LEFT JOIN category ON category.id = company.category_id
+                WHERE company.category_id IS NOT NULL
+                ORDER BY name
+        """)
+
+        options = [dict(row) for row in cursor.fetchall()]
 
         cursor.close()
+        conection.close()
         return options
 
 def get_cart(request: Request):
@@ -140,9 +75,6 @@ def get_cart(request: Request):
 
         return clean_cart
 
-def get_cart_count():
-        return 0
-
 def build_cart_response(redirect_to: str, cart: dict[str, int]):
         response = Response(url=redirect_to, status_code=303)
         response.set_cookie(
@@ -168,7 +100,7 @@ cursor = conection.cursor()
 async def company(company_id: int, search: str | None = None):
 
         cursor = conection.cursor()
-        search_term = (search or "").strip().lower()
+       
 
         cursor.execute("SELECT * FROM company WHERE id = ?", (company_id,))
         row = cursor.fetchone()
@@ -184,25 +116,12 @@ async def company(company_id: int, search: str | None = None):
         """
         dish_params = [company_id]
 
-        if search_term:
-                dish_query += """
-                        AND (
-                                LOWER(name) LIKE ?
-                                OR LOWER(COALESCE(descript, '')) LIKE ?
-                        )
-                """
-                like_term = f"%{search_term}%"
-                dish_params.extend([like_term, like_term])
 
         dish_query += " ORDER BY id"
         cursor.execute(dish_query, dish_params)
         dishes = cursor.fetchall()
 
         cursor.close()
-        
-       
-        if not row:
-                return {"error": "Company not found"}, 404      
         
         return {
                 "company": dict(row),
@@ -282,16 +201,7 @@ async def cart(request: Request):
 
                         subtotal = float(dish_row["price"]) * quantity
                         total_price += subtotal
-                        items.append(
-                                {
-                                        "id": dish_row["id"],
-                                        "name": dish_row["name"],
-                                        "price": dish_row["price"],
-                                        "image_url": dish_row["image_url"],
-                                        "quantity": quantity,
-                                        "subtotal": subtotal,
-                                }
-                        )
+                       
 
         return {
                         "items": items,
@@ -433,11 +343,12 @@ async def dishes(page: int = 1, search: str | None = None):
                         OR LOWER(COALESCE(dish.descript, '')) LIKE ?
                         OR LOWER(COALESCE(company.name, '')) LIKE ?
                 """
-                like_term = f"%{search_term}%"
-                base_query += where_sql
-                count_query += where_sql
-                query_params.extend([like_term, like_term, like_term])
-                count_params.extend([like_term, like_term, like_term])
+                
+                like_term = f"%{search_term.strip().lower()}%"
+                search_params = [like_term] * 4
+
+                query_params.extend(search_params)
+                count_params.extend(search_params)
 
         query = base_query + " ORDER BY dish.id LIMIT ? OFFSET ?"
         cursor.execute(query, (*query_params, items_per_page, offset))
@@ -460,5 +371,3 @@ async def dishes(page: int = 1, search: str | None = None):
                 }
 
 
-if FRONTEND_DIST.exists():
-        app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
